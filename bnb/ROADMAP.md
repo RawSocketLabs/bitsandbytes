@@ -192,6 +192,28 @@ passes with no breaking change needed.
 - [ ] **Option B (no_std streaming I/O)** — a 1.0 requirement, or explicit post-1.0
       (additive)? Document the boundary either way so it's an expectation, not a surprise.
 - [ ] **`encode(writer)` ergonomics** — keep the `use bnb::prelude::*` extension-trait
-      form, or reconsider while it's still cheap?
+      form, or reconsider while it's still cheap? (Subsumed by the encode-model item below.)
+- [ ] **Encode model — `calc`/`reserved` handling + the `to_bytes`/`to_spec_bytes` polarity.**
+      Today `to_bytes` is a *hybrid* (retains `reserved` but recomputes `calc`); `to_spec_bytes`
+      differs only by normalizing `reserved`. Proposal under discussion: make the **default encode
+      canonical** (recompute `calc`, normalize `reserved` to its spec value) and add a **verbatim
+      `encode_raw`** (emit the struct's stored `calc`/`reserved` values as-is — faithful replay /
+      dual-use testing), optionally an `encode_mixed(…)` for per-field raw-vs-spec selection. This
+      cleanly separates the two axes (canonical vs verbatim), but **changes the default** — the
+      faithful `decode → encode` round-trip (byte-identical even for non-compliant input) moves to
+      `encode_raw` — so it's breaking; settle on `0.x`. Interim, a `calc` field can already
+      passthrough today via a conditional `#[bw(calc = if cond { self.field } else { recompute() })]`
+      + a `#[brw(ignore)]` switch (see `examples/ipv4.rs`). **Decide the method set + names before
+      finalizing the ipv4 example (PR #12).** Open sub-questions: default = canonical vs verbatim;
+      include `encode_mixed` now vs defer (the per-field flag idiom already covers selective
+      control); how `encode`/`encode_raw` map onto the existing `to_bytes`/`to_spec_bytes` /
+      `EncodeExt`/`SpecEncodeExt` surface (a rename likely *reduces* the method count).
+- [ ] **`#[default]` for `BitEnum` + struct field defaults** (all additive). (1) a `#[default]`
+      variant marker so `Enum::default()` is well-defined — std `#[derive(Default)]` already
+      covers *unit-only* enums, so bnb only needs its own for the `catch_all` case; (2)
+      `#[default(<value>)]` on the `catch_all` variant (e.g. `#[default(0)] Other(u8)`) — beyond
+      std, since the default carries a value; (3) per-field `#[default(<expr>)]` composing into a
+      real `Default` impl for `#[bin]`/`#[bitfield]` structs (today only the builder-only
+      `#[builder(default = expr)]` exists, and bitfields get an all-zero `Default`).
 - [ ] **Scope line** — is `serde` interop / an `async` codec in scope for 1.0, or
       explicitly out? Decide now so 1.0's surface is intentional.
