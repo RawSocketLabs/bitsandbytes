@@ -1,18 +1,22 @@
 //! **IPv4 header** — a real wire-format parser, end to end.
 //!
 //! One `#[bin]` message folds three `#[bitfield]`s and a `#[derive(BitEnum)]`, recomputes
-//! the header checksum on write (`calc`), maps the raw address words to real
-//! `std::net::Ipv4Addr`s (`map`), and round-trips a captured packet **byte-identically**
-//! in both directions. It also shows the dual-use property: an unknown protocol number
-//! is preserved, not rejected.
+//! the header checksum on write (`calc`), and maps the raw address words to real
+//! `std::net::Ipv4Addr`s (`map`). It decodes a captured packet and logs exactly what came
+//! in and what it became, then builds a fresh header with the required-by-default
+//! **builder** — note we never supply a checksum; `#[builder(default)]` + `calc` fill it
+//! in on write — and logs the bytes that come out. It also shows the dual-use property:
+//! an unknown protocol number is preserved, not rejected.
 //!
-//! The header types below are `no_std`-portable (decode from `&[u8]`, encode to `Vec`);
-//! only this `main` (printing + sockets-free) needs `std`.
+//! Output goes through **`tracing`** (a real logging facade), rendered by
+//! `tracing-subscriber`. The header types are `no_std`-portable (decode from `&[u8]`,
+//! encode to `Vec`); only this `main` needs `std`.
 //!
 //! Run with: `cargo run -p bitsandbytes --example ipv4`
 
 use bnb::{BitEnum, bin, bitfield, u2, u4, u6, u13};
 use std::net::Ipv4Addr;
+use tracing::info;
 
 // --- sub-byte structure, packed into byte-aligned bitfields ---------------------
 
@@ -68,8 +72,6 @@ enum Protocol {
 // --- the whole-message codec ----------------------------------------------------
 
 /// A 20-byte IPv4 header (no options). `#[bin(big)]` because IP is network byte order.
-/// The `checksum` is read and kept (so you can validate it), but `calc` recomputes it on
-/// every write, so it can never silently drift from the header it protects.
 #[bin(big)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Ipv4Header {
@@ -80,9 +82,11 @@ struct Ipv4Header {
     flags_frag: FlagsFrag,
     ttl: u8,
     protocol: Protocol,
-    // Stored on read so you can inspect/validate the on-wire value, but recomputed on
-    // write: `calc` overrides whatever is in the field, so the checksum can't drift.
+    // `calc` recomputes the checksum on every write, and `#[builder(default)]` means the
+    // builder never asks for it — yet it's still stored on read, so you can validate the
+    // on-wire value.
     #[bw(calc = self.header_checksum())]
+    #[builder(default)]
     checksum: u16,
     // The wire repr is a big-endian `u32`; `map` turns it into a real `Ipv4Addr`.
     #[br(map = |raw: u32| Ipv4Addr::from(raw))]
@@ -118,84 +122,101 @@ impl Ipv4Header {
     }
 }
 
+/// Render bytes as space-separated hex for logging.
+fn hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // A real logging subscriber renders the `tracing` events below to stderr.
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_target(false)
+        .without_time()
+        .init();
+
+    // ===== decode ===============================================================
     // The canonical RFC 791 / Wikipedia checksum example header (192.168.0.1 → .199, UDP).
     let wire: [u8; 20] = [
         0x45, 0x00, 0x00, 0x73, 0x00, 0x00, 0x40, 0x00, 0x40, 0x11, 0xb8, 0x61, 0xc0, 0xa8, 0x00,
         0x01, 0xc0, 0xa8, 0x00, 0xc7,
     ];
+    info!(len = wire.len(), bytes = %hex(&wire), "decoding IPv4 header");
 
-    // Decode the whole header in one call.
     let hdr = Ipv4Header::decode_exact(&wire)?;
-    println!("IPv4 {} → {}", hdr.src, hdr.dst);
-    println!(
-        "  version={} ihl={} ttl={} protocol={:?}",
-        hdr.ver_ihl.version(),
-        hdr.ver_ihl.ihl(),
-        hdr.ttl,
-        hdr.protocol,
+    let computed = hdr.header_checksum();
+    info!(
+        version = %hdr.ver_ihl.version(),
+        ihl = %hdr.ver_ihl.ihl(),
+        total_length = hdr.total_length,
+        id = hdr.identification,
+        df = hdr.flags_frag.dont_fragment(),
+        frag_offset = %hdr.flags_frag.fragment_offset(),
+        ttl = hdr.ttl,
+        protocol = ?hdr.protocol,
+        src = %hdr.src,
+        dst = %hdr.dst,
+        checksum = %format!("0x{:04x}", hdr.checksum),
+        checksum_valid = hdr.checksum == computed, // a stored field, so we can validate it
+        "decoded header",
     );
-    println!(
-        "  DF={} MF={} fragment_offset={} dscp={} ecn={:?}",
-        hdr.flags_frag.dont_fragment(),
-        hdr.flags_frag.more_fragments(),
-        hdr.flags_frag.fragment_offset(),
-        hdr.tos.dscp(),
-        hdr.tos.ecn(),
-    );
-    assert_eq!(hdr.src, Ipv4Addr::new(192, 168, 0, 1)); // the `map` produced a real address
-    assert_eq!(hdr.protocol, Protocol::Udp);
-    assert!(hdr.flags_frag.dont_fragment());
+    assert_eq!(hdr.checksum, computed);
 
-    // The on-wire checksum is kept (it's a stored field), so we can validate it.
-    assert_eq!(hdr.checksum, hdr.header_checksum());
-    println!("  on-wire checksum 0x{:04x} is valid ✓", hdr.checksum);
-
-    // Re-encode. The checksum isn't stored — `calc` recomputes it from the other fields —
-    // yet we get the exact original bytes back, which proves our checksum equals 0xb861.
+    // Re-encode the decoded header — byte-for-byte identical (proves the checksum math).
     let reencoded = hdr.to_bytes()?;
+    info!(bytes = %hex(&reencoded), "re-encoded the decoded header (expect byte-identical)");
     assert_eq!(reencoded, wire, "round-trip must be byte-identical");
-    println!(
-        "  re-encoded byte-identical (checksum 0x{:02x}{:02x} recomputed) ✓",
-        wire[10], wire[11],
+
+    // ===== encode via the builder ===============================================
+    // Build a fresh TCP header. We never call `.checksum(...)` — it's `#[builder(default)]`
+    // and `calc` computes the real value on write.
+    let header = Ipv4Header::builder()
+        .ver_ihl(
+            VersionIhl::new()
+                .with_version(u4::new(4))
+                .with_ihl(u4::new(5)),
+        )
+        .tos(Tos::new())
+        .total_length(40)
+        .identification(0x1c46)
+        .flags_frag(FlagsFrag::new().with_dont_fragment(true))
+        .ttl(64)
+        .protocol(Protocol::Tcp)
+        .src(Ipv4Addr::new(10, 0, 0, 1))
+        .dst(Ipv4Addr::new(10, 0, 0, 2))
+        .build()?;
+    info!(
+        protocol = ?header.protocol,
+        src = %header.src,
+        dst = %header.dst,
+        checksum = header.checksum, // 0 — we never set it
+        "header to write (checksum not set; calc will fill it)",
     );
 
-    // Construct a fresh TCP header. The `checksum` we put here is a placeholder — `calc`
-    // recomputes it on encode — so a deliberately-wrong value still produces a correct
-    // packet on the wire.
-    let built = Ipv4Header {
-        ver_ihl: VersionIhl::new()
-            .with_version(u4::new(4))
-            .with_ihl(u4::new(5)),
-        tos: Tos::new(),
-        total_length: 40,
-        identification: 0,
-        flags_frag: FlagsFrag::new().with_dont_fragment(true),
-        ttl: 64,
-        protocol: Protocol::Tcp,
-        checksum: 0xDEAD, // ignored — `calc` overwrites it
-        src: Ipv4Addr::new(10, 0, 0, 1),
-        dst: Ipv4Addr::new(10, 0, 0, 2),
-    };
-    let built_bytes = built.to_bytes()?;
-    let on_wire = Ipv4Header::decode_exact(&built_bytes)?;
-    println!(
-        "  built a TCP header with checksum 0xDEAD; on the wire it's 0x{:04x} ✓",
-        on_wire.checksum,
+    let bytes = header.to_bytes()?;
+    let on_wire_checksum = u16::from_be_bytes([bytes[10], bytes[11]]);
+    info!(
+        len = bytes.len(),
+        bytes = %hex(&bytes),
+        checksum = %format!("0x{on_wire_checksum:04x}"),
+        "encoded header (checksum auto-computed by calc)",
     );
-    assert_eq!(on_wire.checksum, on_wire.header_checksum()); // the recomputed one is valid
-    assert_ne!(on_wire.checksum, 0xDEAD); // the placeholder did not reach the wire
 
-    // Dual-use: an unknown protocol number is preserved, not rejected.
+    // The packet we just wrote decodes back, and its checksum validates.
+    let parsed_back = Ipv4Header::decode_exact(&bytes)?;
+    assert_eq!(parsed_back.checksum, parsed_back.header_checksum());
+
+    // ===== dual-use =============================================================
     let mut exotic = wire;
     exotic[9] = 0xFD; // an experimental protocol number not in our enum
     let parsed = Ipv4Header::decode_exact(&exotic)?;
+    info!(protocol = ?parsed.protocol, "unknown protocol preserved, not rejected (catch_all)");
     assert_eq!(parsed.protocol, Protocol::Other(0xFD));
-    println!(
-        "  unknown protocol 0xFD preserved as {:?} (catch_all) ✓",
-        parsed.protocol
-    );
 
-    println!("all checks passed ✓");
+    info!("all checks passed");
     Ok(())
 }
