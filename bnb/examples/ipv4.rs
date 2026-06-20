@@ -5,8 +5,9 @@
 //! `std::net::Ipv4Addr`s (`map`). It decodes a captured packet and logs exactly what came
 //! in and what it became, then builds a fresh header with the required-by-default
 //! **builder** — note we never supply a checksum; `#[builder(default)]` + `calc` fill it
-//! in on write — and logs the bytes that come out. It also shows the dual-use property:
-//! an unknown protocol number is preserved, not rejected.
+//! in on write — and logs the bytes that come out. It also shows two dual-use escape
+//! hatches: emitting a deliberately-wrong checksum (a `calc` passthrough toggled by a
+//! `#[brw(ignore)]` field), and an unknown protocol number preserved rather than rejected.
 //!
 //! Output goes through **`tracing`** (a real logging facade), rendered by
 //! `tracing-subscriber`. The header types are `no_std`-portable (decode from `&[u8]`,
@@ -82,10 +83,12 @@ struct Ipv4Header {
     flags_frag: FlagsFrag,
     ttl: u8,
     protocol: Protocol,
-    // `calc` recomputes the checksum on every write, and `#[builder(default)]` means the
-    // builder never asks for it — yet it's still stored on read, so you can validate the
-    // on-wire value.
-    #[bw(calc = self.header_checksum())]
+    // `calc` recomputes the checksum on every write (and `#[builder(default)]` means the
+    // builder never asks for it). The conditional opts into a **dual-use passthrough**:
+    // when `emit_raw_checksum` is set, write the stored `checksum` verbatim instead —
+    // e.g. to emit a deliberately-wrong packet. (`self.checksum` is the stored value
+    // because this field isn't `temp`.)
+    #[bw(calc = if self.emit_raw_checksum { self.checksum } else { self.header_checksum() })]
     #[builder(default)]
     checksum: u16,
     // The wire repr is a big-endian `u32`; `map` turns it into a real `Ipv4Addr`.
@@ -95,6 +98,13 @@ struct Ipv4Header {
     #[br(map = |raw: u32| Ipv4Addr::from(raw))]
     #[bw(map = |ip: &Ipv4Addr| u32::from(*ip))]
     dst: Ipv4Addr,
+    /// Encode-time switch, **not on the wire** (`#[brw(ignore)]`): when `true`, the
+    /// checksum `calc` above writes the stored value verbatim instead of recomputing —
+    /// the dual-use escape hatch for emitting a non-compliant packet on purpose.
+    /// `Default`s to `false` (recompute), including on decode.
+    #[brw(ignore)]
+    #[builder(default)]
+    emit_raw_checksum: bool,
 }
 
 impl Ipv4Header {
@@ -210,7 +220,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let parsed_back = Ipv4Header::decode_exact(&bytes)?;
     assert_eq!(parsed_back.checksum, parsed_back.header_checksum());
 
-    // ===== dual-use =============================================================
+    // ===== dual-use: emit a deliberately-wrong checksum =========================
+    // Same header, but flip the `emit_raw_checksum` switch and stash a bogus checksum.
+    // `calc` then writes that stored value verbatim instead of recomputing — for
+    // replaying a captured packet exactly, or testing whether a peer validates checksums.
+    let mut tampered = header.clone();
+    tampered.checksum = 0xBAD0; // a wrong value we want on the wire
+    tampered.emit_raw_checksum = true; // opt into passthrough
+    let tampered_bytes = tampered.to_bytes()?;
+    let tampered_checksum = u16::from_be_bytes([tampered_bytes[10], tampered_bytes[11]]);
+    info!(
+        recomputed = %format!("0x{on_wire_checksum:04x}"),
+        passthrough = %format!("0x{tampered_checksum:04x}"),
+        "calc passthrough: default recomputes a correct checksum; emit_raw_checksum writes the stored value verbatim",
+    );
+    assert_ne!(on_wire_checksum, 0xBAD0); // default mode → recomputed, correct
+    assert_eq!(tampered_checksum, 0xBAD0); // passthrough → the bogus stored value reached the wire
+
+    // ===== dual-use: an unknown protocol is preserved ===========================
     let mut exotic = wire;
     exotic[9] = 0xFD; // an experimental protocol number not in our enum
     let parsed = Ipv4Header::decode_exact(&exotic)?;
