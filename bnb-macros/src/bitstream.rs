@@ -672,8 +672,10 @@ fn field_read_core(f: &syn::Field, br: &FieldBr) -> syn::Result<TokenStream2> {
     // `map`/`try_map`: read the wire value (`f`'s argument type) and transform it to
     // the field type, pinned to the field's declared type.
     if let Some(map) = &br.map {
-        return Ok(quote!(let #id: #ty = #bnb::__private::read_mapped(__bnb_r, #map)
-            .map_err(|e| e.in_field(::core::stringify!(#id)))?;));
+        return Ok(
+            quote!(let #id: #ty = #bnb::__private::read_mapped(__bnb_r, #map)
+            .map_err(|e| e.in_field(::core::stringify!(#id)))?;),
+        );
     }
     if let Some(try_map) = &br.try_map {
         return Ok(
@@ -743,7 +745,9 @@ fn field_read_core(f: &syn::Field, br: &FieldBr) -> syn::Result<TokenStream2> {
         } else {
             // Pin the leaf type explicitly: a `temp` field is not stored in `Self`,
             // so the construction can't infer it.
-            Ok(quote!(let #id: #ty = __bnb_r.read().map_err(|e| e.in_field(::core::stringify!(#id)))?;))
+            Ok(
+                quote!(let #id: #ty = __bnb_r.read().map_err(|e| e.in_field(::core::stringify!(#id)))?;),
+            )
         }
     }
 }
@@ -826,8 +830,10 @@ fn field_write_core(
     // `map`: write `f(&self.field)` (the wire value). A read-side `map`/`try_map`
     // needs the inverse `#[bw(map = …)]` to be encodable.
     if let Some(bw_map) = &br.bw_map {
-        return Ok(quote!(#bnb::__private::write_mapped(__bnb_w, &self.#id, #bw_map)
-            .map_err(|e| e.in_field(::core::stringify!(#id)))?;));
+        return Ok(
+            quote!(#bnb::__private::write_mapped(__bnb_w, &self.#id, #bw_map)
+            .map_err(|e| e.in_field(::core::stringify!(#id)))?;),
+        );
     }
     // `write_with`: the escape hatch — a custom `f(&self.field, w) -> Result<()>`.
     if let Some(f) = &br.write_with {
