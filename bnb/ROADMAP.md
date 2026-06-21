@@ -71,11 +71,11 @@ credit (binrw and the bit/int/enum crates that inspired this one)
 
 - [x] `no_std` + `alloc` behind a default-on **`std`** feature (Option A — buffer-at-a-
       time, not streaming). Without `std`: full macro surface, decode from `&[u8]`,
-      encode to `Vec<u8>` (`to_bytes`/`to_spec_bytes`/`encode_into`). Verified by
+      encode to `Vec<u8>` (`to_bytes`/`to_canonical_bytes`/`encode_into`). Verified by
       building `bnb/nostd-check` for `thumbv7em-none-eabi`.
 - [x] `std` gates the `std::io` ladder (`StreamBitReader`/`BufSource`/`SeekReader`,
       `as_read`/`as_write`), `From<std::io::Error>`/`ErrorKind::Io`, and the
-      `encode(writer)`/`spec_encode(writer)` extension traits (`EncodeExt`/`SpecEncodeExt`).
+      `encode(writer)`/`encode_canonical(writer)` extension traits (`EncodeExt`/`CanonicalEncodeExt`).
       `#[br(dbg)]` (a `tracing` event) is `std`-only.
 - [ ] **Option B** (deferred) — an in-house `bnb::io` `Read`/`Write`/`Seek` abstraction
       to bring streaming I/O to `no_std` and unify the code path; revisit when an
@@ -147,7 +147,7 @@ passes with no breaking change needed.
 
 - [ ] Deliberate public-API review: trait shapes (`BitDecode`/`BitEncode`/`Source`/
       `Sink`/`Bits`/`Bitfield`), the directive vocabulary, error types, and the
-      `EncodeExt`/`SpecEncodeExt` ergonomics — commit only to what you'll keep. Mark
+      `EncodeExt`/`CanonicalEncodeExt` ergonomics — commit only to what you'll keep. Mark
       growth points `#[non_exhaustive]` (errors already are).
 - [x] `cargo-public-api` snapshot (`bnb/public-api.txt`, full surface via `--all-features`)
       + a CI `public-api` job that diffs it, pinned to `nightly-2026-06-17` +
@@ -156,9 +156,12 @@ passes with no breaking change needed.
       change). The proc-macro crate has no rustdoc-extractable surface — its macros are
       covered via the re-exports in the runtime-crate snapshot.
 - [x] `cargo-semver-checks` in CI (`semver-checks` job, pinned to `0.48`) — checks the
-      runtime crate against the latest release tag (`v{version}`, auto-advancing) and
-      **blocks** on SemVer-breaking changes until the version is bumped, so breakage is
-      deliberate. Complements `public-api` (which flags *any* surface change).
+      runtime crate against the latest release tag (`v{version}`, auto-advancing). **Run as
+      informational** (`continue-on-error`): it surfaces SemVer breakage early as a heads-up
+      but does not block, because release-plz already runs cargo-semver-checks and owns the
+      version bump at release time (a break becomes a 0.x minor in the release PR). A
+      blocking gate would force in-PR version bumps that fight that model. Complements
+      `public-api` (which flags *any* surface change).
 - [ ] Lock the MSRV (1.85) and feature-flag set as part of the contract.
 
 ### D. Docs & migration
@@ -191,7 +194,40 @@ passes with no breaking change needed.
       error is gone). Proof: `bin_macro.rs::fields_named_r_and_w_roundtrip`.
 - [ ] **Option B (no_std streaming I/O)** — a 1.0 requirement, or explicit post-1.0
       (additive)? Document the boundary either way so it's an expectation, not a surprise.
-- [ ] **`encode(writer)` ergonomics** — keep the `use bnb::prelude::*` extension-trait
-      form, or reconsider while it's still cheap?
+- [x] **Encode model — `calc`/`reserved` handling, verbatim vs canonical** *(decided; implementation
+      pending)*. Today `to_bytes` is an inconsistent hybrid (retains `reserved` but recomputes
+      `calc`). **Decision:**
+      - **`to_bytes()` / `encode(w)` = verbatim** — emit exactly what's stored (retained `reserved`
+        + stored non-`temp` `calc`). Matches the `to_bytes`/`as_bytes` ecosystem idiom, is
+        dual-use-honest ("never silently rewrite what you gave me"), and restores a byte-identical
+        `decode → to_bytes` round-trip as the default. (`temp`+`calc` fields are never stored, so
+        they always recompute.)
+      - **`to_canonical_bytes()` / `encode_canonical(w)` = canonical** — normalize `reserved` to its
+        spec value, recompute `calc`; always a valid, spec-compliant message. This *renames* today's
+        `to_spec_bytes`/`spec_encode` (`SpecEncode` → `CanonicalEncode`) and additionally generates
+        it whenever a struct has a non-`temp` `calc` (not just `reserved`).
+      - **No `encode_mixed`** — per-field selection is already covered by the value-level
+        `#[brw(ignore)]` flag idiom.
+      - **No `decode_canonical`** — one permissive `decode()` (verbatim) stays; normalize-on-read
+        loses dual-use info and validate-on-read would reject input (both anti-dual-use). In-memory
+        canonicalization, if ever wanted, is an explicit `to_canonical(self) -> Self` helper.
+      Breaking (the only behavior change is non-`temp` `calc` in `to_bytes`: recompute → stored;
+      blast radius is essentially just `examples/ipv4.rs`) — do on `0.x`. Subsumes the old
+      `encode(writer)` ergonomics item.
+- [x] **Bitfield `Debug`** *(done)* — `#[bitfield]` intercepts a `#[derive(Debug)]` and emits a
+      custom impl decomposing the **logical** fields (`version: u4(4), ihl: u4(5)`) instead of
+      the opaque backing int (`{ value: 69 }`); bitfields nested in `#[bin]` structs inherit it.
+- [x] **Canonical helpers** *(done)* — generated alongside `to_canonical_bytes` (when a
+      message has a `reserved` or non-`temp` `calc` field): `to_canonical(self) -> Self` (the
+      in-memory canonical form — reserved → spec, `calc` → recomputed), `canonical_diff(&self)
+      -> Vec<&'static str>` (names of fields differing from canonical), and `is_canonical(&self)
+      -> bool`. `Debug` stays the stored state. Closes the encode-model arc (E1–E3).
+- [ ] **`#[default]` for `BitEnum` + struct field defaults** (all additive). (1) a `#[default]`
+      variant marker so `Enum::default()` is well-defined — std `#[derive(Default)]` already
+      covers *unit-only* enums, so bnb only needs its own for the `catch_all` case; (2)
+      `#[default(<value>)]` on the `catch_all` variant (e.g. `#[default(0)] Other(u8)`) — beyond
+      std, since the default carries a value; (3) per-field `#[default(<expr>)]` composing into a
+      real `Default` impl for `#[bin]`/`#[bitfield]` structs (today only the builder-only
+      `#[builder(default = expr)]` exists, and bitfields get an all-zero `Default`).
 - [ ] **Scope line** — is `serde` interop / an `async` codec in scope for 1.0, or
       explicitly out? Decide now so 1.0's surface is intentional.

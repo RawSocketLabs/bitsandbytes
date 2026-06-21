@@ -52,6 +52,11 @@ the proc-macro.
 - A `#[bitfield]` emits `Bits` + `Bitfield` impls (so it nests in another
   bitfield and in a `#[bin]` message) using its **declared** byte order, plus
   inherent `to_be_bytes`/`to_le_bytes`/`from_be_bytes`/`from_le_bytes`.
+- `#[bitfield]` **intercepts `#[derive(Debug)]`** (like `BitsBuilder`, via
+  `split_outer_attrs`) and emits a custom `Debug` over the *logical* getters
+  (`version: u4(4), ihl: u4(5)`) instead of letting std derive the opaque
+  `{ value: 69 }` on the collapsed backing int. A `#[bin]` struct's std `Debug`
+  then shows nested bitfields decomposed.
 - A byte-aligned `BitEnum` *also* gets `num_enum`-parity conversions
   (`bitenum.rs::conv_impls`): `From<Enum> for uN` always; `From<uN> for Enum`
   when there's a `#[catch_all]` (total) else `TryFrom<uN> for Enum` (errors with
@@ -126,13 +131,23 @@ attribute handles byte-aligned headers and sub-byte frames alike.
 - Gate behind `#[cfg(feature = "std")]`: the reader/writer adapters (`StreamBitReader`/
   `BufSource`/`SeekReader`/`SourceReader`/`SinkWriter`, `as_read`/`as_write`),
   `encode_to_writer*`, `From<std::io::Error>`, and `ErrorKind::Io`.
-- `encode(writer)`/`spec_encode(writer)` are **`std`-gated blanket extension traits**
-  (`EncodeExt: BitEncode` / `SpecEncodeExt: SpecEncode`), **not** generated inherent
+- **Two encode paths — verbatim vs canonical.** `to_bytes`/`encode` are **verbatim**: they
+  emit exactly what's stored (retained `reserved`, stored non-`temp` `calc`) — never
+  silently rewriting the caller's bytes, and `decode → to_bytes` is byte-identical.
+  `to_canonical_bytes`/`encode_canonical` are **canonical**: reserved → spec value, `calc`
+  → recomputed, so the result is always spec-compliant. The canonical impl is generated
+  only when a message has a `reserved` or non-`temp` `calc` field (else the two are
+  identical). There is **no canonical decode** — `decode_*` is always verbatim. The same
+  condition also generates the in-memory helpers `to_canonical(self) -> Self`,
+  `canonical_diff(&self) -> Vec<&'static str>` (fields differing from canonical), and
+  `is_canonical(&self) -> bool`.
+- `encode(writer)`/`encode_canonical(writer)` are **`std`-gated blanket extension traits**
+  (`EncodeExt: BitEncode` / `CanonicalEncodeExt: CanonicalEncode`), **not** generated inherent
   methods — a proc-macro can't see the consumer's features, so a generated
   `#[cfg(feature="std")]` would key off the *wrong* crate's flag. The generated code
-  emits `to_bytes`/`encode_into`/`to_spec_bytes`/`spec_encode_into` (inherent, portable)
-  plus `impl BitEncode { const LAYOUT }` and `impl SpecEncode` (the ext traits read
-  `LAYOUT`/`SPEC_LAYOUT`). Call sites need `use bnb::prelude::*`.
+  emits `to_bytes`/`encode_into`/`to_canonical_bytes`/`canonical_encode_into` (inherent,
+  portable) plus `impl BitEncode { const LAYOUT }` and `impl CanonicalEncode` (the ext
+  traits read `LAYOUT`/`CANONICAL_LAYOUT`). Call sites need `use bnb::prelude::*`.
 - `#[br(dbg)]` is `std`-only (`tracing` is an optional dep enabled by `std`); the
   `__private::tracing` re-export is `std`-gated.
 
