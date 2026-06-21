@@ -87,8 +87,10 @@ the proc-macro.
 
 `#[bin]` is the crate's flagship: one attribute that
 folds the codec (`BitDecode`/`BitEncode`) and the required-by-default builder over
-a struct, generating `decode`/`peek`/`decode_exact`, `encode`/`to_bytes`, and
-`Foo::builder()`. It reads/writes fields at **arbitrary bit offsets**, so the same
+a struct, generating `decode`/`peek`/`decode_exact`, `encode`/`to_bytes`,
+`Foo::builder()`, and a positional `Foo::new(fields…)` (every stored field, in order — the
+struct-literal replacement, since a `reserved`/`calc` message's injected `encode_mode` field
+can't be named in a literal). It reads/writes fields at **arbitrary bit offsets**, so the same
 attribute handles byte-aligned headers and sub-byte frames alike.
 
 - **Lowering.** `#[bin]` lowers to `#[derive(BitDecode, BitEncode, BitsBuilder)]`

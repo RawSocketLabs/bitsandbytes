@@ -1797,6 +1797,45 @@ fn bin_struct(args: &BinArgs, s: &ItemStruct) -> syn::Result<TokenStream2> {
         quote!()
     };
 
+    // A positional `new(...)` over the stored fields, in declaration order — the direct
+    // replacement for a struct literal (which an `encode_mode`-bearing type can no longer use,
+    // and which is otherwise just sugar). Unlike the builder, it takes every stored field
+    // (`reserved`/`calc` included) and never validates; the encode mode starts at `Verbatim`.
+    let new_ctor = {
+        let stored: Vec<&syn::Field> = full_fields
+            .named
+            .iter()
+            .filter(|f| !field_is_temp(f))
+            .collect();
+        let params = stored.iter().map(|f| {
+            let id = f.ident.as_ref().expect("named field");
+            let ty = &f.ty;
+            quote!(#id: #ty)
+        });
+        let inits = stored
+            .iter()
+            .map(|f| f.ident.as_ref().expect("named field"));
+        let mode_field_init = if inject_mode {
+            quote!(, encode_mode: #bnb::EncodeMode::Verbatim)
+        } else {
+            quote!()
+        };
+        let vis = &s.vis;
+        let name = &s.ident;
+        quote! {
+            impl #name {
+                #[doc = "Construct from every stored field, in declaration order — the direct"]
+                #[doc = "replacement for a struct literal. The builder (`Self::builder()`) is the"]
+                #[doc = "alternative that lets `reserved`/`#[builder(default)]` fields default; this"]
+                #[doc = "takes them all and never validates. (The encode mode starts at `Verbatim`.)"]
+                #[allow(clippy::too_many_arguments)]
+                #vis fn new(#(#params),*) -> Self {
+                    Self { #(#inits),* #mode_field_init }
+                }
+            }
+        }
+    };
+
     // The builder is generated directly from the stored fields (so it can run the
     // `validate` hook via `builder::generate`'s post_build). `temp` fields are absent;
     // a reserved field is present but optional, defaulting to its spec value.
@@ -1884,6 +1923,7 @@ fn bin_struct(args: &BinArgs, s: &ItemStruct) -> syn::Result<TokenStream2> {
         #ctx_struct
         #clean
         #mode_extras
+        #new_ctor
         #builder
         #decode
         #encode

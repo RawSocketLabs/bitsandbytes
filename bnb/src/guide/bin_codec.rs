@@ -70,6 +70,7 @@
 //! | encode | `encode(&mut W)` | encode to any [`std::io::Write`], following the value's `encode_mode` |
 //! | encode | `encode_into(&mut K)` | encode (verbatim) into an explicit [`Sink`](crate::Sink) |
 //! | build | `builder()` | the required-by-default builder |
+//! | build | `new(fields…)` | positional constructor — every stored field, in declaration order |
 //!
 //! `decode`/`peek`/`decode_exact`/`to_bytes` are the everyday slice/`Vec` path;
 //! `decode_from`/`encode(&mut W)`/`encode_into` open the door to the
@@ -257,7 +258,8 @@
 //! it — so you set the policy once and stream the value without re-specifying. `to_bytes` /
 //! `to_canonical_bytes` ignore it (always verbatim / canonical). The mode is **excluded from
 //! `PartialEq`/`Eq`/`Hash`/`Debug`** (it's a render preference, not message data), and because
-//! the field can't appear in a struct literal, **construct these via the builder or `decode`**.
+//! the field can't appear in a struct literal, **construct these via the builder, `new(…)`, or
+//! `decode`** (every `#[bin]` type gets a positional `new(fields…)` over its stored fields).
 //!
 //! ```
 //! use bnb::{bin, EncodeExt, EncodeMode};

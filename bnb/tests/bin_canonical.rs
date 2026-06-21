@@ -119,6 +119,25 @@ fn encode_follows_the_values_mode() {
 }
 
 #[test]
+fn new_constructs_from_all_stored_fields() {
+    // `new` is the literal replacement: every stored field in declaration order (reserved +
+    // calc included), and the encode mode starts at Verbatim.
+    let m = Msg::new(u4::new(0xA), u4::new(0xF), 0x99, 0x10);
+    assert_eq!(m.encode_mode(), EncodeMode::Verbatim);
+    assert_eq!(m.to_bytes().unwrap(), [0xAF, 0x99, 0x10]);
+
+    // Same value as the all-fields-set builder.
+    let b = Msg::builder()
+        .tag(u4::new(0xA))
+        .rsv(u4::new(0xF))
+        .check(0x99)
+        .payload(0x10)
+        .build()
+        .unwrap();
+    assert_eq!(m, b);
+}
+
+#[test]
 fn mode_is_excluded_from_debug() {
     let m = Msg::builder()
         .tag(u4::new(1))
