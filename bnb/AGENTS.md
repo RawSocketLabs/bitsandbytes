@@ -143,14 +143,20 @@ attribute handles byte-aligned headers and sub-byte frames alike.
   generates the inherent `to_canonical_bytes`/`canonical_encode_into` plus the in-memory helpers
   `to_canonical(self) -> Self`, `canonical_diff(&self) -> Vec<&'static str>` (fields differing
   from canonical), and `is_canonical(&self) -> bool`.
-- **Runtime mode selection lives on the writer:** `encode(writer, mode: EncodeMode)` (the
-  `std`-gated blanket ext trait `EncodeExt: BitEncode`) dispatches to `bit_encode` vs
-  `canonical_bit_encode`. It's an ext trait — **not** a generated inherent method — because a
-  proc-macro can't see the consumer's features, so a generated `#[cfg(feature="std")]` would key
-  off the *wrong* crate's flag. The generated code emits `to_bytes`/`encode_into`/
-  `to_canonical_bytes`/`canonical_encode_into` (inherent, portable) plus `impl BitEncode { const
-  LAYOUT; fn bit_encode; [fn canonical_bit_encode when reserved/calc] }`. Call sites bring the ext
-  method into scope with `use bnb::prelude::*` (or `use bnb::EncodeExt`).
+- **The mode is carried on the value, not passed to `encode`.** A `reserved`/`calc` message gets
+  a wire-ignored **`encode_mode`** field (default `Verbatim`): builder `.encode_mode(…)`,
+  `set_encode_mode`/`with_encode_mode`, getter `encode_mode()`. `BitEncode::encode_mode(&self)`
+  (default `Verbatim`) is overridden to return it, and the `std`-gated blanket `EncodeExt::encode(w)`
+  (no `mode` param) consults it to pick `bit_encode` vs `canonical_bit_encode`. `EncodeExt` is an ext
+  trait — **not** a generated inherent method — because a proc-macro can't see the consumer's
+  features, so a generated `#[cfg(feature="std")]` would key off the *wrong* crate's flag (bring it
+  in with `use bnb::prelude::*`). **`#[bin]` injects the field and intercepts `Debug`/`PartialEq`/
+  `Hash`** (custom impls over the user fields) so the mode is excluded from equality/hash/Debug — a
+  render preference, not data — which means these types are **builder/`decode`-constructed** (the
+  private field can't appear in a literal). Generated, portable (no `EncodeExt`) methods: `to_bytes`/
+  `encode_into` (verbatim), `to_canonical_bytes`/`canonical_encode_into` (canonical), plus `impl
+  BitEncode { const LAYOUT; fn bit_encode; [fn canonical_bit_encode + fn encode_mode when
+  reserved/calc] }`.
 - `#[br(dbg)]` is `std`-only (`tracing` is an optional dep enabled by `std`); the
   `__private::tracing` re-export is `std`-gated.
 
