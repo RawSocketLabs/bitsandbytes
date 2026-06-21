@@ -129,8 +129,8 @@ jobs:
     # Informational, not blocking: release-plz already runs cargo-semver-checks and owns
     # version bumps at release time (a breaking change becomes a 0.x minor in its release
     # PR). This job surfaces breakage early as a heads-up without forcing an in-PR bump,
-    # which would fight release-plz's version ownership.
-    continue-on-error: true
+    # which would fight release-plz's version ownership. Breakage is reported as a workflow
+    # warning annotation; the step still exits 0 so the check stays green.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -152,8 +152,12 @@ jobs:
             exit 0
           fi
           echo "Baseline: $baseline"
-          # A non-zero exit here (a SemVer-breaking change vs the last release) is reported
-          # but does not block the PR (see `continue-on-error` above) — release-plz turns the
-          # break into the right version bump when it cuts the release PR. The proc-macro
-          # crate has no library API surface, so only the runtime crate is checked.
-          cargo semver-checks --baseline-rev "$baseline" -p bitsandbytes
+          # Informational: surface a SemVer break as a warning annotation but exit 0, so the
+          # check stays green and never forces an in-PR version bump (release-plz turns the
+          # break into the right bump at release time). Only the runtime crate has a library
+          # API surface, so it's the one checked.
+          if cargo semver-checks --baseline-rev "$baseline" -p bitsandbytes; then
+            echo "No SemVer breakage vs $baseline."
+          else
+            echo "::warning title=SemVer breakage::cargo-semver-checks found a breaking change vs ${baseline} — informational only; release-plz turns it into the right version bump at release time."
+          fi
