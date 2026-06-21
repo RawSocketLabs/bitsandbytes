@@ -71,11 +71,11 @@ credit (binrw and the bit/int/enum crates that inspired this one)
 
 - [x] `no_std` + `alloc` behind a default-on **`std`** feature (Option A — buffer-at-a-
       time, not streaming). Without `std`: full macro surface, decode from `&[u8]`,
-      encode to `Vec<u8>` (`to_bytes`/`to_spec_bytes`/`encode_into`). Verified by
+      encode to `Vec<u8>` (`to_bytes`/`to_canonical_bytes`/`encode_into`). Verified by
       building `bnb/nostd-check` for `thumbv7em-none-eabi`.
 - [x] `std` gates the `std::io` ladder (`StreamBitReader`/`BufSource`/`SeekReader`,
       `as_read`/`as_write`), `From<std::io::Error>`/`ErrorKind::Io`, and the
-      `encode(writer)`/`spec_encode(writer)` extension traits (`EncodeExt`/`SpecEncodeExt`).
+      `encode(writer)`/`encode_canonical(writer)` extension traits (`EncodeExt`/`CanonicalEncodeExt`).
       `#[br(dbg)]` (a `tracing` event) is `std`-only.
 - [ ] **Option B** (deferred) — an in-house `bnb::io` `Read`/`Write`/`Seek` abstraction
       to bring streaming I/O to `no_std` and unify the code path; revisit when an
@@ -147,7 +147,7 @@ passes with no breaking change needed.
 
 - [ ] Deliberate public-API review: trait shapes (`BitDecode`/`BitEncode`/`Source`/
       `Sink`/`Bits`/`Bitfield`), the directive vocabulary, error types, and the
-      `EncodeExt`/`SpecEncodeExt` ergonomics — commit only to what you'll keep. Mark
+      `EncodeExt`/`CanonicalEncodeExt` ergonomics — commit only to what you'll keep. Mark
       growth points `#[non_exhaustive]` (errors already are).
 - [x] `cargo-public-api` snapshot (`bnb/public-api.txt`, full surface via `--all-features`)
       + a CI `public-api` job that diffs it, pinned to `nightly-2026-06-17` +
