@@ -156,9 +156,12 @@ passes with no breaking change needed.
       change). The proc-macro crate has no rustdoc-extractable surface — its macros are
       covered via the re-exports in the runtime-crate snapshot.
 - [x] `cargo-semver-checks` in CI (`semver-checks` job, pinned to `0.48`) — checks the
-      runtime crate against the latest release tag (`v{version}`, auto-advancing) and
-      **blocks** on SemVer-breaking changes until the version is bumped, so breakage is
-      deliberate. Complements `public-api` (which flags *any* surface change).
+      runtime crate against the latest release tag (`v{version}`, auto-advancing). **Run as
+      informational** (`continue-on-error`): it surfaces SemVer breakage early as a heads-up
+      but does not block, because release-plz already runs cargo-semver-checks and owns the
+      version bump at release time (a break becomes a 0.x minor in the release PR). A
+      blocking gate would force in-PR version bumps that fight that model. Complements
+      `public-api` (which flags *any* surface change).
 - [ ] Lock the MSRV (1.85) and feature-flag set as part of the contract.
 
 ### D. Docs & migration
