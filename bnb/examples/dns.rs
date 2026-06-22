@@ -258,6 +258,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let resp = Message::decode_exact(wire)?;
+    info!("the full decoded structure:\n{resp:#?}"); // the whole message, pretty-printed
     let answer = &resp.answers[0];
     let ip = &answer.rdata;
     info!(
