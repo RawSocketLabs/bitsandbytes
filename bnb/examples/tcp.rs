@@ -62,11 +62,9 @@ fn reply_to(req: &Message) -> Option<Message> {
 fn serve(stream: TcpStream) -> std::io::Result<()> {
     let mut reader = BufSource::new(&stream); // &TcpStream: Read
     let mut writer = &stream; // &TcpStream: Write — the same underlying socket
-    loop {
-        let req = match Message::decode_from(&mut reader) {
-            Ok(m) => m,
-            Err(_) => break, // client closed the connection (or a framing error) — done
-        };
+    // `decode_from` returns `Err` when the connection closes (or on a framing error) — that
+    // ends the read loop.
+    while let Ok(req) = Message::decode_from(&mut reader) {
         info!(?req, "server ← request");
         match reply_to(&req) {
             Some(reply) => {
