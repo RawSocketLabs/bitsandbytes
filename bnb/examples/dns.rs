@@ -8,9 +8,16 @@
 //! *follows by seeking* and then resumes — the in-memory cursor makes that pointer-chase free
 //! (`seek_to_bit`), no second pass.
 //!
+//! It finishes by **sending the query and receiving the answer over a real UDP loopback socket**
+//! (DNS is datagram-based, so each message is one packet — no framing), the same `#[bin]` codec
+//! on both ends.
+//!
 //! Output goes through `tracing`. Run with: `cargo run -p bitsandbytes --example dns`
 
 use bnb::{BitEnum, BitReader, Sink, Source, bin, bitfield, u3, u4};
+use std::net::UdpSocket;
+use std::thread;
+use std::time::Duration;
 use tracing::info;
 
 // --- the 16-bit flags word: a bitfield of two enums + six bools ----------------
@@ -183,6 +190,30 @@ fn hex(bytes: &[u8]) -> String {
         .join(" ")
 }
 
+/// A tiny DNS server: receive one query datagram, answer it with a single A record, send it back.
+fn serve_one(sock: &UdpSocket) -> std::io::Result<()> {
+    let mut buf = [0u8; 512]; // classic DNS-over-UDP messages fit in 512 bytes
+    let (n, client) = sock.recv_from(&mut buf)?;
+    let query = Message::decode_exact(&buf[..n]).expect("decode query");
+    let q = query.questions[0].clone();
+    let name = q.name.clone();
+    let response = Message::builder()
+        .id(query.id) // echo the transaction id
+        .flags(Flags::new().with_qr(true).with_rd(true).with_ra(true)) // a recursive response
+        .questions(vec![q])
+        .answers(vec![Record {
+            name,
+            rtype: 1,  // A
+            rclass: 1, // IN
+            ttl: 60,
+            rdata: vec![93, 184, 216, 34],
+        }])
+        .build()
+        .expect("build response");
+    sock.send_to(&response.to_bytes().expect("encode response"), client)?;
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
@@ -259,6 +290,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut r = BitReader::new(wire);
     r.seek_to_bit(29 * 8)?;
     assert_eq!(read_name(&mut r)?, vec!["example", "com"]);
+
+    // ===== send + receive over a real UDP loopback socket =====
+    // DNS is datagram-based, so each message is exactly one UDP packet — no framing needed. A
+    // tiny server thread answers one query; the client sends the query built above and decodes
+    // the reply. Both sides run the same `#[bin]` codec.
+    let server = UdpSocket::bind("127.0.0.1:0")?; // ephemeral loopback port
+    let server_addr = server.local_addr()?;
+    let server_thread = thread::spawn(move || serve_one(&server));
+
+    let client = UdpSocket::bind("127.0.0.1:0")?;
+    client.set_read_timeout(Some(Duration::from_secs(2)))?; // safety net, not normally hit
+    client.send_to(&q_bytes, server_addr)?;
+    info!(to = %server_addr, bytes = q_bytes.len(), "client → query over UDP loopback");
+
+    let mut inbox = [0u8; 512];
+    let (n, from) = client.recv_from(&mut inbox)?;
+    let reply = Message::decode_exact(&inbox[..n])?;
+    let a = &reply.answers[0];
+    info!(
+        from = %from,
+        id = %format!("0x{:04x}", reply.id),
+        name = %dotted(&a.name),
+        address = %format!("{}.{}.{}.{}", a.rdata[0], a.rdata[1], a.rdata[2], a.rdata[3]),
+        "client ← response decoded",
+    );
+    assert_eq!(a.name, query.questions[0].name); // the server echoed our question's name
+    server_thread.join().expect("server thread panicked")?;
 
     info!("all checks passed");
     Ok(())
