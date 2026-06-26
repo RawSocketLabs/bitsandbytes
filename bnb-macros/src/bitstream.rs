@@ -267,14 +267,14 @@ struct FieldBr {
     align_after: bool,
     /// `#[br(restore_position)]` — read the field (a peek), then rewind the cursor so
     /// later fields re-read from the same offset; skipped on write. Seeks, so the
-    /// generated `decode_from` is bound on [`SeekSource`](bnb::SeekSource): a
+    /// generated `decode` is bound on [`SeekSource`](bnb::SeekSource): a
     /// forward-only stream is a compile error (the slice entry points
     /// `decode`/`peek`/`decode_exact` always qualify).
     restore_position: bool,
     /// `#[br(seek = <bits>)]` — before reading, jump the cursor to that **absolute**
     /// bit offset (e.g. following a pointer). A read-side primitive (the writer is
     /// append-only); pair with `restore_position` to read at an offset and return.
-    /// Like `restore_position` it seeks, so `decode_from` is bound on
+    /// Like `restore_position` it seeks, so `decode` is bound on
     /// [`SeekSource`](bnb::SeekSource). On encode the seek is a no-op — see the guide.
     seek: Option<syn::Expr>,
     /// `#[br(dbg)]` — emit a `tracing` event (TRACE level, target `bnb::dbg`) carrying
